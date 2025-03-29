@@ -29,7 +29,7 @@ class Config:
 
         # Training
         self.lr = 1e-5
-        self.batch_size = 4
+        self.batch_size = 2
         self.epochs = 100
 
         # Checkpoint

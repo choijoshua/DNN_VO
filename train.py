@@ -83,19 +83,70 @@ def get_optimizer(config, len_dataloader, model, warm_up_duration=0.1):
 
     return optimizer, lr_scheduler
 
+def axis_angle_to_matrix(rotvec):
+    """rotvec: (B, 3) → returns (B, 3, 3) rotation matrix"""
+    theta = torch.norm(rotvec, dim=1, keepdim=True).clamp(min=1e-8)
+    axis = rotvec / theta
+    x, y, z = axis[:, 0], axis[:, 1], axis[:, 2]
+    zero = torch.zeros_like(x)
+    K = torch.stack([
+        zero, -z, y,
+        z, zero, -x,
+        -y, x, zero
+    ], dim=1).reshape(-1, 3, 3)
+    I = torch.eye(3, device=rotvec.device).unsqueeze(0)
+    theta = theta.view(-1, 1, 1)
+    R = I + torch.sin(theta) * K + (1 - torch.cos(theta)) * (K @ K)
+    return R
+
+def pose_vec_to_mat_torch(pose_vec):
+    """pose_vec: (B, 6) → returns (B, 4, 4) transform matrix"""
+    trans = pose_vec[:, :3]
+    rotvec = pose_vec[:, 3:]
+    rot_mat = axis_angle_to_matrix(rotvec)
+    T = torch.eye(4, device=pose_vec.device).repeat(pose_vec.shape[0], 1, 1)
+    T[:, :3, :3] = rot_mat
+    T[:, :3, 3] = trans
+    return T
+
+def matrix_to_axis_angle(R):
+    """R: (B, 3, 3) → returns (B, 3) axis-angle rotation vector"""
+    cos_theta = (R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2] - 1) / 2
+    cos_theta = torch.clamp(cos_theta, -1 + 1e-5, 1 - 1e-5)
+    theta = torch.acos(cos_theta)
+
+    rx = R[:, 2, 1] - R[:, 1, 2]
+    ry = R[:, 0, 2] - R[:, 2, 0]
+    rz = R[:, 1, 0] - R[:, 0, 1]
+    axis = torch.stack([rx, ry, rz], dim=1)
+    axis = axis / (2 * torch.sin(theta).unsqueeze(1).clamp(min=1e-6))
+    rotvec = axis * theta.unsqueeze(1)
+    return rotvec
+
+def mat_to_pose_vec_torch(T):
+    """T: (B, 4, 4) → returns (B, 6) pose vector"""
+    trans = T[:, :3, 3]
+    rotvec = matrix_to_axis_angle(T[:, :3, :3])
+    return torch.cat([trans, rotvec], dim=1)
+
 def compute_loss(pred, gt, cfg, loss_fn):
+    B = pred.shape[0]
+    pred = pred.view(B, cfg.num_frames - 1, 6)
+    gt = gt.view(B, cfg.num_frames - 1, 6)
 
-    pred = torch.reshape(pred, (pred.shape[0], cfg.num_frames-1, 6))
-    estimated_angles = pred[:, :, :3].flatten()
-    estimated_position = pred[:, :, 3:].flatten()
+    # Compose predicted relative poses
+    T01_pred = pose_vec_to_mat_torch(pred[:, 0])
+    T12_pred = pose_vec_to_mat_torch(pred[:, 1])
+    T02_pred = torch.bmm(T01_pred, T12_pred)
+    pose_pred_composed = mat_to_pose_vec_torch(T02_pred)
 
-    gt = torch.reshape(gt, (gt.shape[0], cfg.num_frames-1, 6))
-    gt_angles = gt[:, :, 3:].flatten()
-    gt_position = gt[:, :, :3].flatten()
- 
-    loss_angles = 100*loss_fn(gt_angles.float(), estimated_angles)
-    loss_position = loss_fn(gt_position.float(), estimated_position)
-    loss = (loss_angles + loss_position)
+    # Compose ground truth
+    T01_gt = pose_vec_to_mat_torch(gt[:, 0])
+    T12_gt = pose_vec_to_mat_torch(gt[:, 1])
+    T02_gt = torch.bmm(T01_gt, T12_gt)
+    pose_gt_composed = mat_to_pose_vec_torch(T02_gt)
+
+    loss = loss_fn(pose_gt_composed, pose_pred_composed)
     return loss
 
 
