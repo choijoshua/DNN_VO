@@ -84,68 +84,62 @@ def get_optimizer(config, len_dataloader, model, warm_up_duration=0.1):
     return optimizer, lr_scheduler
 
 def axis_angle_to_matrix(rotvec):
-    # Clamp the norm to avoid exploding values
-    max_norm = 1.0
-    norm = torch.norm(rotvec, dim=1, keepdim=True)
-    norm = torch.clamp(norm, max=max_norm)
-    rotvec = rotvec / (torch.norm(rotvec, dim=1, keepdim=True).clamp(min=1e-8)) * norm
-
-    theta = norm.clamp(min=1e-8)
-    axis = rotvec / theta
-    x, y, z = axis[:, 0], axis[:, 1], axis[:, 2]
-    zero = torch.zeros_like(x)
+    eps = 1e-6
+    max_theta = 1.0  # Clamp maximum rotation angle to 1 radian (adjust as needed)
+    theta = torch.norm(rotvec, dim=1, keepdim=True).clamp(min=eps)
+    theta = torch.clamp(theta, max=max_theta)  # Clamp theta
+    
+    axis = rotvec / (theta + eps)
+    B = rotvec.shape[0]
+    I = torch.eye(3, device=rotvec.device).unsqueeze(0).repeat(B, 1, 1)
+    outer = axis.unsqueeze(2) * axis.unsqueeze(1)
+    zero = torch.zeros(B, device=rotvec.device)
     K = torch.stack([
-        zero, -z,    y,
-        z,    zero, -x,
-        -y,   x,    zero
-    ], dim=1).view(-1, 3, 3)
-    I = torch.eye(3, device=rotvec.device).unsqueeze(0)
-    theta = theta.view(-1, 1, 1)
-    R = I + torch.sin(theta) * K + (1 - torch.cos(theta)) * (K @ K)
+        zero, -axis[:, 2], axis[:, 1],
+        axis[:, 2], zero, -axis[:, 0],
+        -axis[:, 1], axis[:, 0], zero
+    ], dim=1).view(B, 3, 3)
+    cos_theta = torch.cos(theta)
+    sin_theta = torch.sin(theta)
+    R = cos_theta.view(B, 1, 1) * I + (1 - cos_theta).view(B, 1, 1) * outer + sin_theta.view(B, 1, 1) * K
     return R
 
 def matrix_to_axis_angle(R):
     """
-    Converts a batch of rotation matrices (B, 3, 3) to axis-angle vectors (B, 3).
-    This implementation is numerically stable for small rotation angles by using
-    a torch.where to avoid division by very small numbers.
+    Converts a batch of rotation matrices (B, 3, 3) back into axis-angle vectors (B, 3)
+    using a stable formulation that clamps small sin(theta) values.
     """
-    # Compute the rotation angle
+    # Compute the rotation angle from the trace of the matrix
     cos_theta = (R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2] - 1) / 2
-    cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
-    theta = torch.acos(cos_theta)  # (B,)
-
-    # Compute the vector part from the skew-symmetric part of R
-    r = torch.stack([
-        R[:, 2, 1] - R[:, 1, 2],
-        R[:, 0, 2] - R[:, 2, 0],
-        R[:, 1, 0] - R[:, 0, 1]
-    ], dim=1)  # (B, 3)
-
-    sin_theta = torch.sin(theta).unsqueeze(1)  # (B, 1)
-    # Create a mask for small angles where theta is nearly zero.
-    small_angle = (theta < 1e-3).unsqueeze(1)  # (B, 1)
-    # For small angles, use r/2; otherwise, use r/(2*sin(theta))
-    axis = torch.where(small_angle, r / 2, r / (2 * sin_theta.clamp(min=1e-6)))
+    cos_theta = cos_theta.clamp(-1.0, 1.0)
+    theta = torch.acos(cos_theta)  # shape: (B,)
+    # Compute sin(theta) and clamp it to avoid division by zero
+    sin_theta = torch.sin(theta).clamp(min=1e-6)
+    # Extract the rotation axis components
+    rx = (R[:, 2, 1] - R[:, 1, 2]) / (2 * sin_theta)
+    ry = (R[:, 0, 2] - R[:, 2, 0]) / (2 * sin_theta)
+    rz = (R[:, 1, 0] - R[:, 0, 1]) / (2 * sin_theta)
+    axis = torch.stack([rx, ry, rz], dim=1)
     rotvec = axis * theta.unsqueeze(1)
     return rotvec
 
 def pose_vec_to_mat_torch(pose_vec):
     """
     Converts a batch of 6D pose vectors (B, 6) into 4x4 transformation matrices (B, 4, 4).
-    The first 3 elements are translation, the last 3 are an axis-angle rotation.
+    The first three elements are translation, and the last three are an axis-angle rotation.
     """
     trans = pose_vec[:, :3]
     rotvec = pose_vec[:, 3:]
     rot_mat = axis_angle_to_matrix(rotvec)
-    T = torch.eye(4, device=pose_vec.device).unsqueeze(0).repeat(pose_vec.shape[0], 1, 1)
+    B = pose_vec.shape[0]
+    T = torch.eye(4, device=pose_vec.device).unsqueeze(0).repeat(B, 1, 1)
     T[:, :3, :3] = rot_mat
     T[:, :3, 3] = trans
     return T
 
 def mat_to_pose_vec_torch(T):
     """
-    Converts a batch of 4x4 transformation matrices (B, 4, 4) back to 6D pose vectors (B, 6).
+    Converts a batch of 4x4 transformation matrices (B, 4, 4) back into 6D pose vectors (B, 6).
     """
     trans = T[:, :3, 3]
     rotvec = matrix_to_axis_angle(T[:, :3, :3])
@@ -153,30 +147,35 @@ def mat_to_pose_vec_torch(T):
 
 def compute_loss(pred, gt, cfg, loss_fn):
     """
-    For each batch, composes the two relative poses to obtain the final transformation
-    (from frame 0 to frame 2) for both the predictions and ground truth, and then computes
-    the MSE loss between them.
+    For each batch, composes the two relative poses (assumes 3 frames → 2 relative poses)
+    to obtain the transformation from frame 0 to frame 2, then computes the MSE loss between
+    the composed prediction and ground truth.
     
     Assumes:
-      - pred and gt are of shape (B, (num_frames - 1) * 6)
-      - cfg.num_frames == 3 (so two relative poses per sample)
+      - pred and gt have shape (B, (num_frames - 1) * 6)
+      - cfg.num_frames == 3 (thus 2 relative poses per sample)
     """
     B = pred.shape[0]
     pred = pred.view(B, cfg.num_frames - 1, 6)
     gt = gt.view(B, cfg.num_frames - 1, 6)
-
-    # Compose predicted relative poses: T_01 * T_12 = T_02
+    
+    # Clamp the predicted values to a reasonable range
+    # (Adjust the limits based on your data; here we use -5 to 5 as an example.)
+    pred = torch.clamp(pred, -5.0, 5.0)
+    gt = torch.clamp(gt, -5.0, 5.0)
+    
+    # Compose predicted transforms: T_02 = T_01 * T_12
     T01_pred = pose_vec_to_mat_torch(pred[:, 0])
     T12_pred = pose_vec_to_mat_torch(pred[:, 1])
     T02_pred = torch.bmm(T01_pred, T12_pred)
     pose_pred_composed = mat_to_pose_vec_torch(T02_pred)
-
-    # Compose ground truth relative poses
+    
+    # Compose ground truth transforms similarly
     T01_gt = pose_vec_to_mat_torch(gt[:, 0])
     T12_gt = pose_vec_to_mat_torch(gt[:, 1])
     T02_gt = torch.bmm(T01_gt, T12_gt)
     pose_gt_composed = mat_to_pose_vec_torch(T02_gt)
-
+    
     loss = loss_fn(pose_gt_composed, pose_pred_composed)
     return loss
 
@@ -222,11 +221,9 @@ def training_validation(
             image = image.to(device)
             pose = pose.to(device)
 
-
             pred = model(image)
             loss = compute_loss(pred, pose, config, loss_fn)
             train_loss += loss.item()
-            print(f"\n{loss.item()}")
             train_batch_iterator.set_postfix(batch_loss=loss.item())
 
             writer.add_scalar(
@@ -234,6 +231,7 @@ def training_validation(
             )
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
             optimizer.step()
             optimizer.zero_grad()
 
