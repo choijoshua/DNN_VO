@@ -91,6 +91,10 @@ class Block(nn.Module):
         num_spatial_tokens = (x.size(1) - 1) // T
         H = num_spatial_tokens // W
 
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+
         # Temporal
         xt = x[:, 1:, :]
         xt = rearrange(xt, 'b (h w t) m -> (b h w) t m',b=B,h=H,w=W,t=T)
@@ -122,6 +126,18 @@ class Block(nn.Module):
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
+class FeatureExtractorCNN(nn.Module):
+    def __init__(self, in_channels=3, hidden_size=32, kernel_size=3, stride=1, padding=1):
+        super().__init__()
+        self.cnn1 = nn.Conv2d(in_channels=in_channels, out_channels=hidden_size, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.cnn2 = nn.Conv2d(in_channels=hidden_size, out_channels=in_channels, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.cnn1(x)
+        x = self.relu(x)
+        return self.cnn2(x)
+
 class PatchEmbed(nn.Module):
     def __init__(self, img_size=(224, 224), patch_size=16, in_chans=3, embed_dim=768):
         super().__init__()
@@ -135,15 +151,15 @@ class PatchEmbed(nn.Module):
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
-        B, C, T, H, W = x.shape
-        x = rearrange(x, 'b c t h w -> (b t) c h w')
+        B, T, C, H, W = x.shape
+        x = rearrange(x, 'b t c h w -> (b t) c h w')
         x = self.proj(x)
         W = x.size(-1)
         x = x.flatten(2).transpose(1, 2)
         return x, T, W
 
 class VisionTransformer(nn.Module):
-    def __init__(self, img_size=(224, 224), patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
+    def __init__(self, img_size=(224, 224), patch_size=16, in_channels=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qkv_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0.1, hybrid_backbone=None, norm_layer=nn.LayerNorm, num_frames=8, dropout=0.):
 
@@ -152,8 +168,10 @@ class VisionTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.feature_extractor = FeatureExtractorCNN(
+            in_channels=in_channels, hidden_size=32)
         self.patch_embed = PatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
+            img_size=img_size, patch_size=patch_size, in_chans=in_channels, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
 
         ## Positional Embeddings
@@ -193,14 +211,17 @@ class VisionTransformer(nn.Module):
     def forward_features(self, x):
         '''
             Input:
-            x: shape (B, C, T, H, W)
+            x: shape (B, T, C, H, W)
             B: batch size
-            C: num of channels
             T: number of frames
+            C: num of channels
             H: height of image
             W: width of image
         '''
         B = x.shape[0]
+        x = rearrange(x, 'b t c h w -> (b t) c h w')
+        x = self.feature_extractor(x)
+        x = rearrange(x, '(b t) c h w -> b t c h w', b=B)
         x, T, W = self.patch_embed(x) # x ((b t) x patch_num x embed_dim), T: num_frames, W:patch_num
         cls_tokens = self.cls_token.expand(x.size(0), -1, -1)
 

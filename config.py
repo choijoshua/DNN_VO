@@ -8,9 +8,9 @@ class Config:
         
         # Model settings
         self.dim = 384
-        self.num_frames = 3
-        self.image_size = (194, 640)
-        self.patch_size = 16
+        self.num_frames = 4
+        self.image_size = (224, 224)
+        self.patch_size = 32
         self.num_classes = 6 * (self.num_frames - 1)
         self.depth = 12
         self.num_heads = 6
