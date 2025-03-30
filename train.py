@@ -121,7 +121,7 @@ def training_validation(
         config.global_epoch = 0
         checkpoint["epoch"] = 0
 
-    writer = SummaryWriter("runs")
+    writer = SummaryWriter("new_architecture_runs")
     device = config.device
 
     for epoch in range(config.global_epoch, config.global_epoch + config.epochs):
@@ -235,7 +235,7 @@ def get_model(config):
         print("No pretrained model provided. Training from scratch.")
         return model
     state_dict = torch.load(config.pretrained)
-    model.load_state_dict(state_dict["model_state_dict"])
+    model.load_state_dict(state_dict["model"])
 
     return model 
 
