@@ -13,10 +13,6 @@ class DeepVOConfig:
         self.num_workers = 4
         self.hidden_size=1000
         
-        # tiny  - patch_size=16, embed_dim=192, depth=12, num_heads=3
-        # small - patch_size=16, embed_dim=384, depth=12, num_heads=6
-        # base  - patch_size=16, embed_dim=768, depth=12, num_heads=12
-        
         #data
         self.data_dir = Path("data")
 

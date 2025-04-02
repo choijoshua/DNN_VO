@@ -4,12 +4,12 @@ import torch.nn as nn
 
 class ConvLayer(nn.Module):
 
-    def __init__(self, input_channels=6, input_img_size=(752, 480), conv_dropout=0.1):
+    def __init__(self, input_channels=3, num_frames=3, input_img_size=(752, 480), conv_dropout=0.1):
         
         super().__init__()
         self.relu = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(p=conv_dropout)
-        self.conv1 = nn.Conv2d(in_channels=input_channels, out_channels=64, kernel_size=7, padding=3, stride=2)
+        self.conv1 = nn.Conv2d(in_channels=input_channels*num_frames, out_channels=64, kernel_size=7, padding=3, stride=2)
         self.conv2 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=5, padding=2, stride=2)
         self.conv3 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=5, padding=2, stride=2)
         self.conv3_1 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1, stride=1)
@@ -20,11 +20,12 @@ class ConvLayer(nn.Module):
         self.conv6 = nn.Conv2d(in_channels=512, out_channels=1024, kernel_size=3, padding=1, stride=2)
         self.flatten = nn.Flatten()
 
-        x = torch.zeros((1, input_channels, input_img_size[0], input_img_size[1]))
+        x = torch.zeros((1, num_frames, input_channels, input_img_size[0], input_img_size[1]))
         self.dim = self.forward(x).size()[-1]
 
     def forward(self, x):
-
+        B, T, C, H, W = x.shape
+        x = x.reshape(B, T * C, H, W)
         x = self.dropout(self.relu(self.conv1(x)))
         x = self.dropout(self.relu(self.conv2(x)))
         x = self.dropout(self.relu(self.conv3(x)))
@@ -39,10 +40,11 @@ class ConvLayer(nn.Module):
 
 class DeepVO(nn.Module):
 
-    def __init__(self, input_channels=6, image_size=(192, 640), hidden_size=1000, lstm_layers=2, num_classes=6, lstm_dropout=0.2, conv_dropout=0.1, batch_size=4):
+    def __init__(self, input_channels=3, num_frames=3, image_size=(192, 640), hidden_size=1000, lstm_layers=2, num_classes=6, lstm_dropout=0.2, conv_dropout=0.1):
 
         super().__init__()
         self.feature_extractor = ConvLayer(input_channels=input_channels, 
+                                           num_frames=num_frames,
                                            input_img_size=image_size, 
                                            conv_dropout=conv_dropout)
         

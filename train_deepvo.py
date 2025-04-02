@@ -98,7 +98,7 @@ def compute_loss(pred, gt, cfg, loss_fn):
  
     loss_angles = 100 * loss_fn(gt_angles.float(), estimated_angles)
     loss_position = loss_fn(gt_position.float(), estimated_position)
-    loss = 1000*(loss_angles + loss_position)
+    loss = (loss_angles + loss_position)
     return loss
 
 
