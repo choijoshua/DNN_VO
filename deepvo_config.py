@@ -7,15 +7,9 @@ class DeepVOConfig:
         self.device = None
         
         # Model settings
-        self.dim = 384
-        self.num_frames = 2
-        self.image_size = (190, 640)
+        self.num_frames = 3
+        self.image_size = (224, 224)
         self.num_classes = 6 * (self.num_frames - 1)
-        self.depth = 12
-        self.num_heads = 6
-        self.dim_head = 64
-        self.attn_dropout = 0.1
-        self.ff_dropout = 0.1
         self.num_workers = 4
         self.hidden_size=1000
         
@@ -24,14 +18,14 @@ class DeepVOConfig:
         # base  - patch_size=16, embed_dim=768, depth=12, num_heads=12
         
         #data
-        self.data_dir = Path("/home/undergrad3203/Downloads/data")
+        self.data_dir = Path("data")
 
 
         # Training
         self.lr = 1e-5
-        self.batch_size = 4
+        self.batch_size = 32
         self.pretrained = None
-        self.epochs = 200
+        self.epochs = 250
 
         # Checkpoint
         self.checkpoint_dir = Path("checkpoints/DEEPVO")

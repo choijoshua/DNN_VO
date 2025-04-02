@@ -221,9 +221,9 @@ def training_validation(
 
 def get_model(config):
     model = DeepVO(image_size=config.image_size,
+                   num_frames=config.num_frames,
                    num_classes=config.num_classes,
-                   input_channels=config.num_frames*3,
-                   batch_size=config.batch_size,
+                   input_channels=3,
                    hidden_size=config.hidden_size)
     
     if config.pretrained is not None:
